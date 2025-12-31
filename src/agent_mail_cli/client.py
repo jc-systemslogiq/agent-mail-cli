@@ -146,7 +146,21 @@ class AgentMailClient:
                 data=error.get("data"),
             )
 
-        return result.get("result")
+        # Extract actual data from MCP response wrapper
+        mcp_result = result.get("result", {})
+        if isinstance(mcp_result, dict):
+            # Prefer structuredContent, fall back to parsing content[0].text
+            if "structuredContent" in mcp_result:
+                structured = mcp_result["structuredContent"]
+                # Some responses wrap in "result", others don't
+                if isinstance(structured, dict) and "result" in structured:
+                    return structured["result"]
+                return structured
+            elif "content" in mcp_result and mcp_result["content"]:
+                # Parse JSON from text content
+                text = mcp_result["content"][0].get("text", "{}")
+                return json.loads(text)
+        return mcp_result
 
     # Convenience methods for common operations
 
