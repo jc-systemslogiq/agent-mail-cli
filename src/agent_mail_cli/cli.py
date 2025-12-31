@@ -14,6 +14,7 @@ from rich.console import Console
 from rich.table import Table
 
 from .client import AgentMailClient, AgentMailConfig, AgentMailError
+from .database import AgentMailDB
 
 app = typer.Typer(
     name="agent-mail",
@@ -24,9 +25,13 @@ app = typer.Typer(
 # Subcommands
 session_app = typer.Typer(help="Session management commands")
 contacts_app = typer.Typer(help="Contact management commands")
+file_reservations_app = typer.Typer(help="Inspect file reservations")
+acks_app = typer.Typer(help="Review acknowledgement status")
 
 app.add_typer(session_app, name="session")
 app.add_typer(contacts_app, name="contacts")
+app.add_typer(file_reservations_app, name="file_reservations")
+app.add_typer(acks_app, name="acks")
 
 console = Console()
 err_console = Console(stderr=True)
@@ -42,6 +47,11 @@ def get_project_key(project: str | None) -> str:
 def get_client() -> AgentMailClient:
     """Get configured client."""
     return AgentMailClient(AgentMailConfig.from_env())
+
+
+def get_db() -> AgentMailDB:
+    """Get database connection."""
+    return AgentMailDB()
 
 
 def output_result(result: dict | list, as_json: bool) -> None:
@@ -426,6 +436,274 @@ def health(as_json: JsonOption = False):
         client = get_client()
         result = client.health_check()
         output_result(result, as_json)
+    except Exception as e:
+        handle_error(e)
+
+
+# --- Database-backed commands (fast, no HTTP) ---
+
+def _fmt_delta(expires_ts: str) -> str:
+    """Format time delta from now to expiry."""
+    from datetime import datetime, timezone
+    try:
+        # Parse ISO timestamp
+        exp = datetime.fromisoformat(expires_ts.replace("Z", "+00:00"))
+        now = datetime.now(timezone.utc)
+        delta = exp - now
+        total = int(delta.total_seconds())
+        sign = "-" if total < 0 else ""
+        total = abs(total)
+        h, r = divmod(total, 3600)
+        m, s = divmod(r, 60)
+        return f"{sign}{h:02d}:{m:02d}:{s:02d}"
+    except Exception:
+        return "?"
+
+
+# File reservations subcommands
+@file_reservations_app.command("active")
+def file_reservations_active(
+    project: Annotated[str, typer.Argument(help="Project path or slug")],
+    limit: Annotated[int, typer.Option("-n", "--limit", help="Max reservations")] = 100,
+    as_json: JsonOption = False,
+):
+    """List active file reservations with expiry countdowns."""
+    try:
+        db = get_db()
+        rows = db.file_reservations_active(project, limit)
+        if as_json:
+            print(json.dumps(rows, indent=2, default=str))
+        else:
+            if not rows:
+                console.print("[dim]No active reservations[/dim]")
+            else:
+                table = Table(title=f"Active File Reservations — {project}")
+                table.add_column("ID", style="cyan")
+                table.add_column("Agent", style="green")
+                table.add_column("Pattern")
+                table.add_column("Exclusive")
+                table.add_column("Expires")
+                table.add_column("In", style="yellow")
+                for r in rows:
+                    table.add_row(
+                        str(r["id"]),
+                        r["agent"],
+                        r["path_pattern"],
+                        "yes" if r["exclusive"] else "no",
+                        r["expires_ts"][:19] if r["expires_ts"] else "",
+                        _fmt_delta(r["expires_ts"]) if r["expires_ts"] else "",
+                    )
+                console.print(table)
+    except Exception as e:
+        handle_error(e)
+
+
+@file_reservations_app.command("soon")
+def file_reservations_soon(
+    project: Annotated[str, typer.Argument(help="Project path or slug")],
+    minutes: Annotated[int, typer.Option("--minutes", "-m", help="Minutes threshold")] = 30,
+    as_json: JsonOption = False,
+):
+    """Show file reservations expiring soon."""
+    try:
+        db = get_db()
+        rows = db.file_reservations_soon(project, minutes)
+        if as_json:
+            print(json.dumps(rows, indent=2, default=str))
+        else:
+            if not rows:
+                console.print(f"[dim]No reservations expiring within {minutes} minutes[/dim]")
+            else:
+                table = Table(title=f"Reservations Expiring Soon — {project}")
+                table.add_column("ID", style="cyan")
+                table.add_column("Agent", style="green")
+                table.add_column("Pattern")
+                table.add_column("Expires In", style="red")
+                for r in rows:
+                    table.add_row(
+                        str(r["id"]),
+                        r["agent"],
+                        r["path_pattern"],
+                        _fmt_delta(r["expires_ts"]) if r["expires_ts"] else "",
+                    )
+                console.print(table)
+    except Exception as e:
+        handle_error(e)
+
+
+@file_reservations_app.command("list")
+def file_reservations_list(
+    project: Annotated[str, typer.Argument(help="Project path or slug")],
+    all_: Annotated[bool, typer.Option("--all", "-a", help="Include released")] = False,
+    limit: Annotated[int, typer.Option("-n", "--limit", help="Max reservations")] = 100,
+    as_json: JsonOption = False,
+):
+    """List file reservations for a project."""
+    try:
+        db = get_db()
+        rows = db.file_reservations_list(project, active_only=not all_, limit=limit)
+        if as_json:
+            print(json.dumps(rows, indent=2, default=str))
+        else:
+            if not rows:
+                console.print("[dim]No reservations[/dim]")
+            else:
+                table = Table(title=f"File Reservations — {project}")
+                table.add_column("ID", style="cyan")
+                table.add_column("Agent", style="green")
+                table.add_column("Pattern")
+                table.add_column("Exclusive")
+                table.add_column("Expires")
+                table.add_column("Released")
+                for r in rows:
+                    table.add_row(
+                        str(r["id"]),
+                        r["agent"],
+                        r["path_pattern"],
+                        "yes" if r["exclusive"] else "no",
+                        r["expires_ts"][:19] if r.get("expires_ts") else "",
+                        r["released_ts"][:19] if r.get("released_ts") else "",
+                    )
+                console.print(table)
+    except Exception as e:
+        handle_error(e)
+
+
+# Acks subcommands
+@acks_app.command("pending")
+def acks_pending(
+    project: Annotated[str, typer.Argument(help="Project path or slug")],
+    agent: Annotated[str, typer.Argument(help="Agent name")],
+    limit: Annotated[int, typer.Option("-n", "--limit", help="Max messages")] = 20,
+    as_json: JsonOption = False,
+):
+    """List messages requiring acknowledgement that are still pending."""
+    try:
+        db = get_db()
+        rows = db.acks_pending(project, agent, limit)
+        if as_json:
+            print(json.dumps(rows, indent=2, default=str))
+        else:
+            if not rows:
+                console.print("[dim]No pending acknowledgements[/dim]")
+            else:
+                table = Table(title=f"Pending Acks for {agent}")
+                table.add_column("ID", style="cyan")
+                table.add_column("From", style="green")
+                table.add_column("Subject")
+                table.add_column("Importance", style="yellow")
+                table.add_column("Date", style="dim")
+                for r in rows:
+                    table.add_row(
+                        str(r["id"]),
+                        r.get("sender", ""),
+                        r["subject"],
+                        r["importance"],
+                        r["created_ts"][:19] if r.get("created_ts") else "",
+                    )
+                console.print(table)
+    except Exception as e:
+        handle_error(e)
+
+
+@acks_app.command("overdue")
+def acks_overdue(
+    project: Annotated[str, typer.Argument(help="Project path or slug")],
+    agent: Annotated[str, typer.Argument(help="Agent name")],
+    hours: Annotated[int, typer.Option("--hours", "-h", help="Age threshold in hours")] = 24,
+    limit: Annotated[int, typer.Option("-n", "--limit", help="Max messages")] = 20,
+    as_json: JsonOption = False,
+):
+    """List ack-required messages older than threshold without acknowledgement."""
+    try:
+        db = get_db()
+        rows = db.acks_overdue(project, agent, hours, limit)
+        if as_json:
+            print(json.dumps(rows, indent=2, default=str))
+        else:
+            if not rows:
+                console.print(f"[dim]No overdue acknowledgements (threshold: {hours}h)[/dim]")
+            else:
+                table = Table(title=f"Overdue Acks for {agent} (>{hours}h)")
+                table.add_column("ID", style="cyan")
+                table.add_column("From", style="green")
+                table.add_column("Subject")
+                table.add_column("Importance", style="red")
+                table.add_column("Date", style="dim")
+                for r in rows:
+                    table.add_row(
+                        str(r["id"]),
+                        r.get("sender", ""),
+                        r["subject"],
+                        r["importance"],
+                        r["created_ts"][:19] if r.get("created_ts") else "",
+                    )
+                console.print(table)
+    except Exception as e:
+        handle_error(e)
+
+
+# Convenience alias for list-acks
+@app.command("list-acks")
+def list_acks(
+    project: ProjectOption = None,
+    agent: Annotated[str, typer.Option("--agent", "-a", help="Agent name")] = "",
+    limit: Annotated[int, typer.Option("-n", "--limit", help="Max messages")] = 10,
+    as_json: JsonOption = False,
+):
+    """List messages requiring acknowledgement for an agent."""
+    if not agent:
+        err_console.print("[red]Error:[/red] --agent is required")
+        raise typer.Exit(1)
+    try:
+        db = get_db()
+        rows = db.list_acks(get_project_key(project), agent, limit)
+        if as_json:
+            print(json.dumps(rows, indent=2, default=str))
+        else:
+            if not rows:
+                console.print("[dim]No pending acknowledgements[/dim]")
+            else:
+                for r in rows:
+                    console.print(
+                        f"[cyan]{r['id']}[/cyan] | "
+                        f"[green]{r.get('sender', '')}[/green] | "
+                        f"{r['subject']} | "
+                        f"[yellow]{r['importance']}[/yellow]"
+                    )
+    except Exception as e:
+        handle_error(e)
+
+
+# List projects command
+@app.command("list-projects")
+def list_projects(
+    limit: Annotated[int, typer.Option("-n", "--limit", help="Max projects")] = 100,
+    as_json: JsonOption = False,
+):
+    """List known projects."""
+    try:
+        db = get_db()
+        rows = db.list_projects(limit)
+        if as_json:
+            print(json.dumps(rows, indent=2, default=str))
+        else:
+            if not rows:
+                console.print("[dim]No projects[/dim]")
+            else:
+                table = Table(title="Projects")
+                table.add_column("ID", style="cyan")
+                table.add_column("Slug")
+                table.add_column("Human Key")
+                table.add_column("Created", style="dim")
+                for r in rows:
+                    table.add_row(
+                        str(r["id"]),
+                        r["slug"][:30] + "…" if len(r["slug"]) > 30 else r["slug"],
+                        r["human_key"][:40] + "…" if len(r["human_key"]) > 40 else r["human_key"],
+                        r["created_at"][:19] if r.get("created_at") else "",
+                    )
+                console.print(table)
     except Exception as e:
         handle_error(e)
 
