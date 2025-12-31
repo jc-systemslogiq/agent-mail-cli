@@ -153,18 +153,11 @@ The CLI connects to an `mcp-agent-mail` server. Run it in Docker:
 TOKEN=$(openssl rand -hex 32)
 echo "$TOKEN" > ~/.config/agent-mail/token
 
-# Run with token auth (required for non-localhost access)
+# Run with token auth (recommended)
 docker run -d --name agent-mail \
   --restart unless-stopped \
   -p 8765:8765 \
   -e HTTP_BEARER_TOKEN="$TOKEN" \
-  -v ~/.mcp_agent_mail_git_mailbox_repo:/data/mailbox \
-  mcp-agent-mail
-
-# Or without auth (localhost only, dev environments)
-docker run -d --name agent-mail \
-  --restart unless-stopped \
-  -p 8765:8765 \
   -e HTTP_RBAC_ENABLED=false \
   -v ~/.mcp_agent_mail_git_mailbox_repo:/data/mailbox \
   mcp-agent-mail
