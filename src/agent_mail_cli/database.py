@@ -27,6 +27,14 @@ class AgentMailDB:
         conn.row_factory = sqlite3.Row
         return conn
 
+    def _connect_rw(self) -> sqlite3.Connection:
+        """Get a read-write connection."""
+        if not Path(self.db_path).exists():
+            raise FileNotFoundError(f"Database not found: {self.db_path}")
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        return conn
+
     def _get_project_id(self, conn: sqlite3.Connection, project_key: str) -> int | None:
         """Get project ID from human_key or slug."""
         cur = conn.execute(
@@ -220,3 +228,113 @@ class AgentMailDB:
             )
             row = cur.fetchone()
             return dict(row) if row else None
+
+    def agent_dependencies(self, project_key: str, agent_name: str) -> dict[str, Any]:
+        """Check for agent dependencies that would prevent deletion."""
+        with self._connect() as conn:
+            project_id = self._get_project_id(conn, project_key)
+            if not project_id:
+                raise ValueError(f"Project not found: {project_key}")
+            agent_id = self._get_agent_id(conn, project_id, agent_name)
+            if not agent_id:
+                raise ValueError(f"Agent '{agent_name}' not found in project")
+
+            # Check for unread messages where agent is recipient
+            cur = conn.execute(
+                """
+                SELECT COUNT(*) as count FROM message_recipients mr
+                JOIN messages m ON mr.message_id = m.id
+                WHERE mr.agent_id = ? AND mr.read_ts IS NULL
+                """,
+                (agent_id,),
+            )
+            unread_messages = cur.fetchone()["count"]
+
+            # Check for active file reservations
+            cur = conn.execute(
+                """
+                SELECT COUNT(*) as count FROM file_reservations
+                WHERE agent_id = ? AND released_ts IS NULL
+                  AND (expires_ts IS NULL OR expires_ts > datetime('now'))
+                """,
+                (agent_id,),
+            )
+            active_reservations = cur.fetchone()["count"]
+
+            # Check for messages sent by agent (informational)
+            cur = conn.execute(
+                "SELECT COUNT(*) as count FROM messages WHERE sender_id = ?",
+                (agent_id,),
+            )
+            sent_messages = cur.fetchone()["count"]
+
+            return {
+                "agent_id": agent_id,
+                "unread_messages": unread_messages,
+                "active_reservations": active_reservations,
+                "sent_messages": sent_messages,
+                "can_delete": unread_messages == 0 and active_reservations == 0,
+            }
+
+    def delete_agent(self, project_key: str, agent_name: str, force: bool = False) -> dict[str, Any]:
+        """Delete an agent from the project.
+
+        Args:
+            project_key: Project path or slug
+            agent_name: Agent name to delete
+            force: If True, delete even with unread messages/active reservations
+
+        Returns:
+            Dict with deletion status and cleaned up records
+        """
+        deps = self.agent_dependencies(project_key, agent_name)
+
+        if not deps["can_delete"] and not force:
+            raise ValueError(
+                f"Cannot delete agent '{agent_name}': "
+                f"{deps['unread_messages']} unread messages, "
+                f"{deps['active_reservations']} active reservations. "
+                "Use --force to delete anyway."
+            )
+
+        with self._connect_rw() as conn:
+            project_id = self._get_project_id(conn, project_key)
+            agent_id = deps["agent_id"]
+
+            # Release any active file reservations
+            cur = conn.execute(
+                """
+                UPDATE file_reservations
+                SET released_ts = datetime('now')
+                WHERE agent_id = ? AND released_ts IS NULL
+                """,
+                (agent_id,),
+            )
+            released_reservations = cur.rowcount
+
+            # Delete message_recipients entries (keeps messages but removes agent as recipient)
+            cur = conn.execute(
+                "DELETE FROM message_recipients WHERE agent_id = ?",
+                (agent_id,),
+            )
+            removed_recipient_entries = cur.rowcount
+
+            # Delete contact links
+            cur = conn.execute(
+                "DELETE FROM agent_links WHERE a_agent_id = ? OR b_agent_id = ?",
+                (agent_id, agent_id),
+            )
+            removed_links = cur.rowcount
+
+            # Delete the agent
+            conn.execute("DELETE FROM agents WHERE id = ?", (agent_id,))
+            conn.commit()
+
+            return {
+                "deleted": True,
+                "agent_name": agent_name,
+                "released_reservations": released_reservations,
+                "removed_recipient_entries": removed_recipient_entries,
+                "removed_links": removed_links,
+                "orphaned_sent_messages": deps["sent_messages"],
+            }

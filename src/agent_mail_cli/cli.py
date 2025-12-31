@@ -402,6 +402,58 @@ def whoami(
         handle_error(e)
 
 
+@app.command()
+def delete(
+    agent: Annotated[str, typer.Argument(help="Agent name to delete")],
+    project: ProjectOption = None,
+    force: Annotated[bool, typer.Option("--force", "-f", help="Delete even with unread messages/reservations")] = False,
+    dry_run: Annotated[bool, typer.Option("--dry-run", "-n", help="Check dependencies without deleting")] = False,
+    as_json: JsonOption = False,
+):
+    """Delete an agent from the project.
+
+    Checks for unread messages and active file reservations before deletion.
+    Use --force to delete anyway, or --dry-run to just check dependencies.
+    """
+    try:
+        db = get_db()
+        project_key = get_project_key(project)
+
+        if dry_run:
+            # Just check dependencies
+            deps = db.agent_dependencies(project_key, agent)
+            if as_json:
+                print(json.dumps(deps, indent=2))
+            else:
+                if deps["can_delete"]:
+                    console.print(f"[green]✓[/green] Agent '{agent}' can be safely deleted")
+                else:
+                    console.print(f"[yellow]⚠[/yellow] Agent '{agent}' has dependencies:")
+                    if deps["unread_messages"]:
+                        console.print(f"  • {deps['unread_messages']} unread message(s)")
+                    if deps["active_reservations"]:
+                        console.print(f"  • {deps['active_reservations']} active file reservation(s)")
+                if deps["sent_messages"]:
+                    console.print(f"[dim]  • {deps['sent_messages']} sent message(s) will be orphaned[/dim]")
+        else:
+            # Actually delete
+            result = db.delete_agent(project_key, agent, force=force)
+            if as_json:
+                print(json.dumps(result, indent=2))
+            else:
+                console.print(f"[green]✓[/green] Deleted agent '{agent}'")
+                if result["released_reservations"]:
+                    console.print(f"  • Released {result['released_reservations']} file reservation(s)")
+                if result["removed_recipient_entries"]:
+                    console.print(f"  • Removed from {result['removed_recipient_entries']} message recipient(s)")
+                if result["removed_links"]:
+                    console.print(f"  • Removed {result['removed_links']} contact link(s)")
+                if result["orphaned_sent_messages"]:
+                    console.print(f"[dim]  • {result['orphaned_sent_messages']} sent message(s) now orphaned[/dim]")
+    except Exception as e:
+        handle_error(e)
+
+
 # Contacts subcommands
 @contacts_app.command("list")
 def contacts_list(
@@ -671,6 +723,37 @@ def list_acks(
                         f"{r['subject']} | "
                         f"[yellow]{r['importance']}[/yellow]"
                     )
+    except Exception as e:
+        handle_error(e)
+
+
+# List agents command
+@app.command("list-agents")
+def list_agents(
+    project: ProjectOption = None,
+    as_json: JsonOption = False,
+):
+    """List agents in a project."""
+    try:
+        db = get_db()
+        rows = db.list_agents(get_project_key(project))
+        if as_json:
+            print(json.dumps(rows, indent=2, default=str))
+        else:
+            if not rows:
+                console.print("[dim]No agents[/dim]")
+            else:
+                table = Table(title="Agents")
+                table.add_column("Name", style="cyan")
+                table.add_column("Task")
+                table.add_column("Last Active", style="dim")
+                for r in rows:
+                    table.add_row(
+                        r["name"],
+                        r["task_description"][:40] + "…" if len(r.get("task_description", "")) > 40 else r.get("task_description", ""),
+                        r["last_active_ts"][:19] if r.get("last_active_ts") else "",
+                    )
+                console.print(table)
     except Exception as e:
         handle_error(e)
 
