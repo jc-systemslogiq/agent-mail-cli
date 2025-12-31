@@ -398,3 +398,56 @@ class AgentMailClient:
     def health_check(self) -> dict[str, Any]:
         """Check server health."""
         return self.call_tool("health_check", {})
+
+    # --- CLI parity helpers (avoid direct DB access) ---
+
+    def list_projects(self, limit: int = 100) -> list[dict[str, Any]]:
+        return self.call_tool("list_projects", {"limit": limit})
+
+    def list_agents(self, project_key: str, limit: int = 500) -> list[dict[str, Any]]:
+        return self.call_tool("list_agents", {"project_key": project_key, "limit": limit})
+
+    def list_file_reservations(
+        self,
+        project_key: str,
+        *,
+        active_only: bool = True,
+        expiring_within_minutes: int | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        args: dict[str, Any] = {
+            "project_key": project_key,
+            "active_only": active_only,
+            "limit": limit,
+        }
+        if expiring_within_minutes is not None:
+            args["expiring_within_minutes"] = expiring_within_minutes
+        return self.call_tool("list_file_reservations", args)
+
+    def list_acks_pending(self, project_key: str, agent_name: str, limit: int = 20) -> list[dict[str, Any]]:
+        return self.call_tool(
+            "list_acks_pending",
+            {"project_key": project_key, "agent_name": agent_name, "limit": limit},
+        )
+
+    def list_acks_overdue(
+        self,
+        project_key: str,
+        agent_name: str,
+        *,
+        hours: int = 24,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        return self.call_tool(
+            "list_acks_overdue",
+            {"project_key": project_key, "agent_name": agent_name, "hours": hours, "limit": limit},
+        )
+
+    def agent_dependencies(self, project_key: str, agent_name: str) -> dict[str, Any]:
+        return self.call_tool("agent_dependencies", {"project_key": project_key, "agent_name": agent_name})
+
+    def delete_agent(self, project_key: str, agent_name: str, *, force: bool = False, dry_run: bool = False) -> dict[str, Any]:
+        return self.call_tool(
+            "delete_agent",
+            {"project_key": project_key, "agent_name": agent_name, "force": force, "dry_run": dry_run},
+        )

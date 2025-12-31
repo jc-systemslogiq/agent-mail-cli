@@ -14,7 +14,6 @@ from rich.console import Console
 from rich.table import Table
 
 from .client import AgentMailClient, AgentMailConfig, AgentMailError
-from .database import AgentMailDB
 
 app = typer.Typer(
     name="agent-mail",
@@ -47,11 +46,6 @@ def get_project_key(project: str | None) -> str:
 def get_client() -> AgentMailClient:
     """Get configured client."""
     return AgentMailClient(AgentMailConfig.from_env())
-
-
-def get_db() -> AgentMailDB:
-    """Get database connection."""
-    return AgentMailDB()
 
 
 def output_result(result: dict | list, as_json: bool) -> None:
@@ -416,12 +410,12 @@ def delete(
     Use --force to delete anyway, or --dry-run to just check dependencies.
     """
     try:
-        db = get_db()
+        client = get_client()
         project_key = get_project_key(project)
 
         if dry_run:
             # Just check dependencies
-            deps = db.agent_dependencies(project_key, agent)
+            deps = client.agent_dependencies(project_key, agent)
             if as_json:
                 print(json.dumps(deps, indent=2))
             else:
@@ -437,7 +431,7 @@ def delete(
                     console.print(f"[dim]  • {deps['sent_messages']} sent message(s) will be orphaned[/dim]")
         else:
             # Actually delete
-            result = db.delete_agent(project_key, agent, force=force)
+            result = client.delete_agent(project_key, agent, force=force, dry_run=False)
             if as_json:
                 print(json.dumps(result, indent=2))
             else:
@@ -521,8 +515,8 @@ def file_reservations_active(
 ):
     """List active file reservations with expiry countdowns."""
     try:
-        db = get_db()
-        rows = db.file_reservations_active(project, limit)
+        client = get_client()
+        rows = client.list_file_reservations(project, active_only=True, limit=limit)
         if as_json:
             print(json.dumps(rows, indent=2, default=str))
         else:
@@ -558,8 +552,8 @@ def file_reservations_soon(
 ):
     """Show file reservations expiring soon."""
     try:
-        db = get_db()
-        rows = db.file_reservations_soon(project, minutes)
+        client = get_client()
+        rows = client.list_file_reservations(project, active_only=True, expiring_within_minutes=minutes, limit=500)
         if as_json:
             print(json.dumps(rows, indent=2, default=str))
         else:
@@ -592,8 +586,8 @@ def file_reservations_list(
 ):
     """List file reservations for a project."""
     try:
-        db = get_db()
-        rows = db.file_reservations_list(project, active_only=not all_, limit=limit)
+        client = get_client()
+        rows = client.list_file_reservations(project, active_only=not all_, limit=limit)
         if as_json:
             print(json.dumps(rows, indent=2, default=str))
         else:
@@ -631,8 +625,8 @@ def acks_pending(
 ):
     """List messages requiring acknowledgement that are still pending."""
     try:
-        db = get_db()
-        rows = db.acks_pending(project, agent, limit)
+        client = get_client()
+        rows = client.list_acks_pending(project, agent, limit)
         if as_json:
             print(json.dumps(rows, indent=2, default=str))
         else:
@@ -668,8 +662,8 @@ def acks_overdue(
 ):
     """List ack-required messages older than threshold without acknowledgement."""
     try:
-        db = get_db()
-        rows = db.acks_overdue(project, agent, hours, limit)
+        client = get_client()
+        rows = client.list_acks_overdue(project, agent, hours=hours, limit=limit)
         if as_json:
             print(json.dumps(rows, indent=2, default=str))
         else:
@@ -708,8 +702,8 @@ def list_acks(
         err_console.print("[red]Error:[/red] --agent is required")
         raise typer.Exit(1)
     try:
-        db = get_db()
-        rows = db.list_acks(get_project_key(project), agent, limit)
+        client = get_client()
+        rows = client.list_acks_pending(get_project_key(project), agent, limit)
         if as_json:
             print(json.dumps(rows, indent=2, default=str))
         else:
@@ -735,8 +729,8 @@ def list_agents(
 ):
     """List agents in a project."""
     try:
-        db = get_db()
-        rows = db.list_agents(get_project_key(project))
+        client = get_client()
+        rows = client.list_agents(get_project_key(project))
         if as_json:
             print(json.dumps(rows, indent=2, default=str))
         else:
@@ -766,8 +760,8 @@ def list_projects(
 ):
     """List known projects."""
     try:
-        db = get_db()
-        rows = db.list_projects(limit)
+        client = get_client()
+        rows = client.list_projects(limit)
         if as_json:
             print(json.dumps(rows, indent=2, default=str))
         else:
