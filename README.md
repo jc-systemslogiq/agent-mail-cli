@@ -20,12 +20,24 @@ pip install ~/projects/ai/agent-mail-cli
 
 ## Configuration
 
-Environment variables (optional - defaults work for localhost):
+Config is stored in `~/.config/agent-mail/`:
+
+```bash
+# Store bearer token (required when server uses auth)
+mkdir -p ~/.config/agent-mail
+echo "YOUR_TOKEN_HERE" > ~/.config/agent-mail/token
+
+# Optional: additional settings in config file
+echo "url=http://127.0.0.1:8765/mcp/" > ~/.config/agent-mail/config
+echo "timeout=30" >> ~/.config/agent-mail/config
+```
+
+Environment variables override config files when set:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `AGENT_MAIL_URL` | `http://127.0.0.1:8765/mcp/` | Server URL |
-| `AGENT_MAIL_TOKEN` | *(none)* | Bearer token (localhost doesn't need auth) |
+| `AGENT_MAIL_TOKEN` | *(from ~/.config/agent-mail/token)* | Bearer token |
 | `AGENT_MAIL_TIMEOUT` | `30` | Request timeout in seconds |
 
 ## Usage
@@ -137,9 +149,23 @@ agent-mail search "error" --json | jq '.[] | .subject'
 The CLI connects to an `mcp-agent-mail` server. Run it in Docker:
 
 ```bash
+# Generate a token (save it for the CLI config)
+TOKEN=$(openssl rand -hex 32)
+echo "$TOKEN" > ~/.config/agent-mail/token
+
+# Run with token auth (required for non-localhost access)
 docker run -d --name agent-mail \
   --restart unless-stopped \
   -p 8765:8765 \
+  -e HTTP_BEARER_TOKEN="$TOKEN" \
+  -v ~/.mcp_agent_mail_git_mailbox_repo:/data/mailbox \
+  mcp-agent-mail
+
+# Or without auth (localhost only, dev environments)
+docker run -d --name agent-mail \
+  --restart unless-stopped \
+  -p 8765:8765 \
+  -e HTTP_RBAC_ENABLED=false \
   -v ~/.mcp_agent_mail_git_mailbox_repo:/data/mailbox \
   mcp-agent-mail
 ```
