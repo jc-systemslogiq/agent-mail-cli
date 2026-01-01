@@ -229,6 +229,28 @@ class AgentMailClient:
             args["since_ts"] = since_ts
         return self.call_tool("fetch_inbox", args)
 
+    def inbox_status(
+        self,
+        project_key: str,
+        agent_name: str | None = None,
+        *,
+        since_ts: str | None = None,
+        urgent_only: bool = False,
+        recent_seconds: int | None = None,
+    ) -> dict[str, Any]:
+        """Fetch lightweight inbox status (counts/timestamps only)."""
+        args: dict[str, Any] = {
+            "project_key": project_key,
+            "urgent_only": urgent_only,
+        }
+        if agent_name:
+            args["agent_name"] = agent_name
+        if since_ts:
+            args["since_ts"] = since_ts
+        if recent_seconds is not None:
+            args["recent_seconds"] = int(recent_seconds)
+        return self.call_tool("inbox_status", args)
+
     def send_message(
         self,
         project_key: str,
@@ -450,4 +472,10 @@ class AgentMailClient:
         return self.call_tool(
             "delete_agent",
             {"project_key": project_key, "agent_name": agent_name, "force": force, "dry_run": dry_run},
+        )
+
+    def purge_deleted_agents(self, project_key: str, *, dry_run: bool = False) -> dict[str, Any]:
+        return self.call_tool(
+            "purge_deleted_agents",
+            {"project_key": project_key, "dry_run": dry_run},
         )
